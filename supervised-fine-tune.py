@@ -49,16 +49,25 @@ def jload(f, mode="r"):
     f.close()
     return jdict
 
+# PROMPT_DICT = {
+#     "prompt_input": (
+#         "Below is an instruction that describes a task, paired with an input that provides further context. "
+#         "Write a response that appropriately completes the request.\n\n"
+#         "### Instruction:\n{instruction}\n\n### Input:\n{input}\n\n### Response:"
+#     ),
+#     "prompt_no_input": (
+#         "Below is an instruction that describes a task. "
+#         "Write a response that appropriately completes the request.\n\n"
+#         "### Instruction:\n{instruction}\n\n### Response:"
+#     ),
+# }
+
 PROMPT_DICT = {
     "prompt_input": (
-        "Below is an instruction that describes a task, paired with an input that provides further context. "
-        "Write a response that appropriately completes the request.\n\n"
-        "### Instruction:\n{instruction}\n\n### Input:\n{input}\n\n### Response:"
+        "[INST] {instruction}\n\nRespond only with a concise summary of the above text. [/INST]"
     ),
     "prompt_no_input": (
-        "Below is an instruction that describes a task. "
-        "Write a response that appropriately completes the request.\n\n"
-        "### Instruction:\n{instruction}\n\n### Response:"
+        "[INST] {instruction}\n\nRespond only with a concise summary of the above text. [/INST]"
     ),
 }
 
@@ -66,7 +75,8 @@ PROMPT_DICT = {
 @dataclass
 class ModelArguments:
     model_name_or_path: Optional[str] = field(default="EleutherAI/pythia-1.4b-deduped")
-    model_type: Optional[str] = field(default="gpt-neox")
+    # model_type: Optional[str] = field(default="gpt-neox")
+    model_type: Optional[str] = field(default="llama")
 
 
 @dataclass
@@ -166,15 +176,18 @@ class SupervisedDataset(Dataset):
         list_data_dict = jload(data_path)
 
         logging.warning("Formatting inputs...")
-        '''
+        # '''
         prompt_input, prompt_no_input = PROMPT_DICT["prompt_input"], PROMPT_DICT["prompt_no_input"]
         sources = [
             prompt_input.format_map(example) if example.get("input", "") != "" else prompt_no_input.format_map(example)
             for example in list_data_dict
         ]
-        '''
+        # '''
 
-        sources = [example["instruction"] for example in list_data_dict]
+        # sources = [example["instruction"] for example in list_data_dict]
+
+        # To print out the prompt
+        # print(f"{sources[0]}\n\n")
 
         targets = [f"{example['output']}{tokenizer.eos_token}" for example in list_data_dict]
 
@@ -277,7 +290,12 @@ def train():
             # added `dense` to match with llama as the basic LoRA would only target 'query_key_value'
             targets = ["query_key_value", "dense"]
         else:
-            targets=["q_proj", "k_proj", "v_proj", "o_proj"],
+            targets = [
+              "self_attn.q_proj",
+              "self_attn.k_proj",
+              "self_attn.v_proj",
+              "self_attn.o_proj"
+            ]
 
         config = LoraConfig(
             r=8,
@@ -287,9 +305,18 @@ def train():
             bias="none",
             task_type="CAUSAL_LM",
         )
+        print(f"model is {model}")
         model = get_peft_model(model, config)
         # enable trainable params
         [p.requires_grad_() for n, p in model.named_parameters() if any([k in n for k in training_args.trainable_params.split(",")])]
+        trainable_params = {n: p for n, p in model.named_parameters() if any([k in n for k in training_args.trainable_params.split(",")])}
+
+        # Convert trainable_params to state_dict format
+        trainable_params_state_dict = {n: p.data for n, p in trainable_params.items()}
+        
+        # for n, p in model.named_parameters():
+        #     print(f"{n}: {p.requires_grad}")
+
 
     model.config.use_cache = False         # required for gradient checkpointing
     model.enable_input_require_grads()     # required for gradient checkpointing
@@ -299,7 +326,10 @@ def train():
     trainer.train()
     trainer.save_state()
     trainer.save_model(output_dir=training_args.output_dir)
-
+    
+    # Save only from master node to avoid duplicate saves
+    if torch.distributed.get_rank() == 0:
+        torch.save(trainable_params_state_dict, f"{training_args.output_dir}/trainable_params.bin")
 
 if __name__ == "__main__":
     train()

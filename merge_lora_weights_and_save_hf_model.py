@@ -108,6 +108,10 @@ def main(args):
     model.save_pretrained(args.save_path)
     tokenizer.save_pretrained(args.save_path)
 
+    model.push_to_hub(args.save_path, use_auth_token=True, max_shard_size="10GB", safe_serialization=True)
+
+    tokenizer.push_to_hub(args.save_path, use_auth_token=True)
+
 if __name__ == "__main__":
     args = parse_config()
     main(args)
